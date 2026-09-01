@@ -6,10 +6,14 @@ public static class OpenApiExtensions
         var underlyingType = Nullable.GetUnderlyingType(currentClass) ?? currentClass;
         currentClass = underlyingType;
 
-        // 2. TIPOS PRIMITIVOS E ESTRUTURAS BÁSICAS
-        // Recebem o próprio nome do tipo (ex: "Int32", "String", "Guid") para que o
-        // OpenAPI gere um schema referenciável ($ref) também para eles, em vez de
-        // inlinar o campo sem criar entrada em "Schemas".
+        // 2. FILTRO DE PRIMITIVOS E ESTRUTURAS BÁSICAS
+        // Precisa retornar null: o gerador de OpenAPI do .NET 10 só infere
+        // corretamente o "type"/"format" (integer, boolean, string+date-time, uuid...)
+        // para esses tipos quando eles são inlinados. Dar um reference id a eles
+        // faz o gerador tratá-los como schema reutilizável e o "type" cai para
+        // "string" em todos, pois ele não resolve o tipo real de tipos "folha"
+        // fora do contexto de uma propriedade. Retornando null aqui, o campo é
+        // inlinado com o tipo correto (ex: "type": "integer", "type": "boolean").
         if (currentClass.IsPrimitive ||
             currentClass == typeof(string) ||
             currentClass == typeof(decimal) ||
@@ -18,7 +22,7 @@ public static class OpenApiExtensions
             currentClass == typeof(TimeSpan) ||
             currentClass == typeof(Guid))
         {
-            return currentClass.Name;
+            return null;
         }
 
         // 3. FILTRO DE LISTAS E ARRAYS NATOS
