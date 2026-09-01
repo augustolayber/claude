@@ -59,6 +59,51 @@ public static class OpenApiExtensions
         return returnedValue;
     }
 
+    // Mapeia um tipo primitivo/estrutura básica (já sem o wrapper Nullable<T>)
+    // para o par (type, format) que o OpenAPI deve exibir.
+    private static (JsonSchemaType Type, string? Format)? GetPrimitiveSchemaInfo(Type underlyingType)
+    {
+        if (underlyingType == typeof(bool))
+            return (JsonSchemaType.Boolean, null);
+
+        if (underlyingType == typeof(byte) || underlyingType == typeof(sbyte) ||
+            underlyingType == typeof(short) || underlyingType == typeof(ushort) ||
+            underlyingType == typeof(int) || underlyingType == typeof(uint))
+            return (JsonSchemaType.Integer, "int32");
+
+        if (underlyingType == typeof(long) || underlyingType == typeof(ulong))
+            return (JsonSchemaType.Integer, "int64");
+
+        if (underlyingType == typeof(float))
+            return (JsonSchemaType.Number, "float");
+
+        if (underlyingType == typeof(double))
+            return (JsonSchemaType.Number, "double");
+
+        if (underlyingType == typeof(decimal))
+            return (JsonSchemaType.Number, "double");
+
+        if (underlyingType == typeof(char))
+            return (JsonSchemaType.String, null);
+
+        if (underlyingType == typeof(string))
+            return (JsonSchemaType.String, null);
+
+        if (underlyingType == typeof(Guid))
+            return (JsonSchemaType.String, "uuid");
+
+        if (underlyingType == typeof(DateTime))
+            return (JsonSchemaType.String, "date-time");
+
+        if (underlyingType == typeof(DateTimeOffset))
+            return (JsonSchemaType.String, "date-time");
+
+        if (underlyingType == typeof(TimeSpan))
+            return (JsonSchemaType.String, "duration");
+
+        return null;
+    }
+
     // =========================================================================
     // ABORDAGEM NOVA: .NET 10 Nativo (AddOpenApi)
     // =========================================================================
@@ -86,14 +131,15 @@ public static class OpenApiExtensions
                 });
 
                 // =======================================================================
-                // NOVO: Transformer para garantir que os valores dos Enums apareçam
+                // Transformer para Enums, tipos primitivos e tipos nullable (T?)
                 // =======================================================================
                 options.AddSchemaTransformer((schema, context, cancellationToken) =>
                 {
                     var type = context.JsonTypeInfo.Type;
 
-                    // Pega o tipo base (para lidar com Enums nullable, ex: Status?)
+                    // Pega o tipo base (para lidar com tipos nullable, ex: Status?, int?, Guid?)
                     var underlyingType = Nullable.GetUnderlyingType(type) ?? type;
+                    var isNullable = underlyingType != type;
 
                     if (underlyingType.IsEnum)
                     {
@@ -107,6 +153,24 @@ public static class OpenApiExtensions
                         schema.Enum = enumNames
                             .Select(name => (JsonNode)JsonValue.Create(name))
                             .ToList();
+                    }
+                    else
+                    {
+                        // Preenche explicitamente type/format dos primitivos e estruturas
+                        // básicas (int, bool, Guid, DateTime, ...), pois nem sempre o
+                        // gerador nativo consegue inferi-los sozinho.
+                        var primitiveInfo = GetPrimitiveSchemaInfo(underlyingType);
+                        if (primitiveInfo is { } info)
+                        {
+                            schema.Type = info.Type;
+                            schema.Format = info.Format;
+                        }
+                    }
+
+                    // Marca o schema como nullable (T?) quando o tipo original era Nullable<T>
+                    if (isNullable && schema.Type.HasValue)
+                    {
+                        schema.Type |= JsonSchemaType.Null;
                     }
 
                     return Task.CompletedTask;
