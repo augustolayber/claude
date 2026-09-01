@@ -104,6 +104,76 @@ public static class OpenApiExtensions
         return null;
     }
 
+    // Popula document.Info a partir do DocInfoDto de cada documento configurado.
+    private static Func<OpenApiDocument, OpenApiDocumentTransformerContext, CancellationToken, Task> CreateDocumentInfoTransformer(DocInfoDto doc)
+    {
+        return (document, context, cancellationToken) =>
+        {
+            document.Info = new OpenApiInfo
+            {
+                Title = doc.Title,
+                Version = doc.Version,
+                Description = doc.Description
+            };
+            return Task.CompletedTask;
+        };
+    }
+
+    // Ajusta o schema para Enums (exibidos como texto com os valores) e delega
+    // o restante (primitivos e nullable) para os métodos auxiliares abaixo.
+    private static Task TransformSchema(OpenApiSchema schema, OpenApiSchemaTransformerContext context, CancellationToken cancellationToken)
+    {
+        var type = context.JsonTypeInfo.Type;
+
+        // Pega o tipo base (para lidar com tipos nullable, ex: Status?, int?, Guid?)
+        var underlyingType = Nullable.GetUnderlyingType(type) ?? type;
+        var isNullable = underlyingType != type;
+
+        if (underlyingType.IsEnum)
+        {
+            ApplyEnumSchema(schema, underlyingType);
+        }
+        else
+        {
+            ApplyPrimitiveSchema(schema, underlyingType);
+        }
+
+        // Marca o schema como nullable (T?) quando o tipo original era Nullable<T>
+        if (isNullable && schema.Type.HasValue)
+        {
+            schema.Type |= JsonSchemaType.Null;
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private static void ApplyEnumSchema(OpenApiSchema schema, Type enumType)
+    {
+        // Garante que o tipo no Swagger seja texto
+        schema.Type = JsonSchemaType.String;
+
+        // Extrai os nomes do Enum
+        var enumNames = Enum.GetNames(enumType);
+
+        // ATUALIZAÇÃO .NET 10: schema.Enum agora recebe IList<JsonNode>
+        schema.Enum = enumNames
+            .Select(name => (JsonNode)JsonValue.Create(name))
+            .ToList();
+    }
+
+    private static void ApplyPrimitiveSchema(OpenApiSchema schema, Type underlyingType)
+    {
+        // Preenche explicitamente type/format dos primitivos e estruturas básicas
+        // (int, bool, Guid, DateTime, ...), pois nem sempre o gerador nativo
+        // consegue inferi-los sozinho.
+        var primitiveInfo = GetPrimitiveSchemaInfo(underlyingType);
+        if (primitiveInfo is { } info)
+        {
+            schema.Type = info.Type;
+            schema.Format = info.Format;
+        }
+    }
+
     // =========================================================================
     // ABORDAGEM NOVA: .NET 10 Nativo (AddOpenApi)
     // =========================================================================
@@ -118,67 +188,9 @@ public static class OpenApiExtensions
             builder.Services.AddOpenApi(doc.Guid!, options =>
             {
                 options.OpenApiVersion = Microsoft.OpenApi.OpenApiSpecVersion.OpenApi3_0;
-
-                options.AddDocumentTransformer((document, context, cancellationToken) =>
-                {
-                    document.Info = new OpenApiInfo
-                    {
-                        Title = doc.Title,
-                        Version = doc.Version,
-                        Description = doc.Description
-                    };
-                    return Task.CompletedTask;
-                });
-
-                // =======================================================================
-                // Transformer para Enums, tipos primitivos e tipos nullable (T?)
-                // =======================================================================
-                options.AddSchemaTransformer((schema, context, cancellationToken) =>
-                {
-                    var type = context.JsonTypeInfo.Type;
-
-                    // Pega o tipo base (para lidar com tipos nullable, ex: Status?, int?, Guid?)
-                    var underlyingType = Nullable.GetUnderlyingType(type) ?? type;
-                    var isNullable = underlyingType != type;
-
-                    if (underlyingType.IsEnum)
-                    {
-                        // Garante que o tipo no Swagger seja texto
-                        schema.Type = JsonSchemaType.String;
-
-                        // Extrai os nomes do Enum
-                        var enumNames = Enum.GetNames(underlyingType);
-
-                        // ATUALIZAÇÃO .NET 10: schema.Enum agora recebe IList<JsonNode>
-                        schema.Enum = enumNames
-                            .Select(name => (JsonNode)JsonValue.Create(name))
-                            .ToList();
-                    }
-                    else
-                    {
-                        // Preenche explicitamente type/format dos primitivos e estruturas
-                        // básicas (int, bool, Guid, DateTime, ...), pois nem sempre o
-                        // gerador nativo consegue inferi-los sozinho.
-                        var primitiveInfo = GetPrimitiveSchemaInfo(underlyingType);
-                        if (primitiveInfo is { } info)
-                        {
-                            schema.Type = info.Type;
-                            schema.Format = info.Format;
-                        }
-                    }
-
-                    // Marca o schema como nullable (T?) quando o tipo original era Nullable<T>
-                    if (isNullable && schema.Type.HasValue)
-                    {
-                        schema.Type |= JsonSchemaType.Null;
-                    }
-
-                    return Task.CompletedTask;
-                });
-                // =======================================================================
-
+                options.AddDocumentTransformer(CreateDocumentInfoTransformer(doc));
+                options.AddSchemaTransformer(TransformSchema);
                 options.CreateSchemaReferenceId = (typeInfo) => RemoveSchemaView(typeInfo.Type);
-
                 options.AddOpenApiAuthentication();
             });
         }
