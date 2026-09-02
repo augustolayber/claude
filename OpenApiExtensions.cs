@@ -1,3 +1,5 @@
+using System.Reflection;
+
 public static class OpenApiExtensions
 {
     private static string? RemoveSchemaView(Type currentClass)
@@ -125,9 +127,13 @@ public static class OpenApiExtensions
     {
         var type = context.JsonTypeInfo.Type;
 
-        // Pega o tipo base (para lidar com tipos nullable, ex: Status?, int?, Guid?)
+        // Pega o tipo base (para lidar com tipos nullable de VALUE TYPE, ex: Status?, int?, Guid?)
         var underlyingType = Nullable.GetUnderlyingType(type) ?? type;
-        var isNullable = underlyingType != type;
+
+        // Nullable<T> cobre value types. Para REFERENCE TYPES (ex: string? Texto),
+        // o "?" é só uma anotação de nullable reference type (NRT): o Type continua
+        // sendo `string`, então precisamos ler a anotação via reflection.
+        var isNullable = underlyingType != type || IsNullableReferenceType(context);
 
         if (underlyingType.IsEnum)
         {
@@ -145,6 +151,23 @@ public static class OpenApiExtensions
         }
 
         return Task.CompletedTask;
+    }
+
+    // Detecta "string? Texto", "MinhaClasse? Objeto" etc: reference types onde o
+    // "?" não gera Nullable<T>, apenas uma anotação de nullable reference type
+    // lida via NullabilityInfoContext a partir do PropertyInfo/FieldInfo original.
+    private static bool IsNullableReferenceType(OpenApiSchemaTransformerContext context)
+    {
+        var attributeProvider = context.JsonPropertyInfo?.AttributeProvider;
+
+        var nullabilityInfo = attributeProvider switch
+        {
+            PropertyInfo propertyInfo => new NullabilityInfoContext().Create(propertyInfo),
+            FieldInfo fieldInfo => new NullabilityInfoContext().Create(fieldInfo),
+            _ => null
+        };
+
+        return nullabilityInfo?.WriteState == NullabilityState.Nullable;
     }
 
     private static void ApplyEnumSchema(OpenApiSchema schema, Type enumType)
